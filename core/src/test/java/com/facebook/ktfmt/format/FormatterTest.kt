@@ -20,6 +20,8 @@ import com.facebook.ktfmt.format.Formatter.META_FORMAT
 import com.facebook.ktfmt.testutil.assertFormatted
 import com.facebook.ktfmt.testutil.assertThatFormatting
 import com.facebook.ktfmt.testutil.defaultTestFormattingOptions
+import com.google.common.collect.Range
+import com.google.common.collect.TreeRangeSet
 import com.google.common.truth.Truth.assertThat
 import org.junit.Assert.fail
 import org.junit.BeforeClass
@@ -9211,6 +9213,40 @@ class FormatterTest {
     assertThatFormatting(formattedOnce)
         .withOptions(Formatter.KOTLINLANG_FORMAT)
         .isEqualTo(formattedOnce)
+  }
+
+  @Test
+  fun `partial formatting keeps a trailing comma it adds within the max width`() {
+    // Only line 0 is selected, so the call below is reformatted only by the whole-file cleanup
+    // passes, which add its trailing comma. That comma must not leave the line over the limit.
+    val code =
+        """
+        |fun other() = 1
+        |
+        |val x =
+        |    functionCall(
+        |        shortArg,
+        |        namedArgument = "string sized so the trailing comma ktfmt adds tips it one char over the limit."
+        |    )
+        |"""
+            .trimMargin()
+
+    val expected =
+        """
+        |fun other() = 1
+        |
+        |val x =
+        |    functionCall(
+        |        shortArg,
+        |        namedArgument =
+        |            "string sized so the trailing comma ktfmt adds tips it one char over the limit.",
+        |    )
+        |"""
+            .trimMargin()
+
+    val lineRanges = TreeRangeSet.create<Int>().apply { add(Range.closedOpen(0, 1)) }
+    assertThat(Formatter.format(Formatter.KOTLINLANG_FORMAT, code, lineRanges = lineRanges))
+        .isEqualTo(expected)
   }
 
   @Test

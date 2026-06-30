@@ -18,6 +18,7 @@ package com.facebook.ktfmt.format
 
 import com.facebook.ktfmt.debughelpers.printOps
 import com.facebook.ktfmt.format.RedundantElementManager.addRedundantElements
+import com.facebook.ktfmt.format.RedundantElementManager.addRedundantElementsWithRanges
 import com.facebook.ktfmt.format.RedundantElementManager.dropRedundantElements
 import com.facebook.ktfmt.format.WhitespaceTombstones.indexOfWhitespaceTombstone
 import com.facebook.ktfmt.kdoc.Escaping
@@ -42,6 +43,7 @@ import org.jetbrains.kotlin.psi.KtFile
 import org.jetbrains.kotlin.psi.KtImportDirective
 import org.jetbrains.kotlin.psi.psiUtil.endOffset
 import org.jetbrains.kotlin.psi.psiUtil.startOffset
+import org.jetbrains.kotlin.utils.addToStdlib.applyIf
 
 object Formatter {
 
@@ -117,46 +119,44 @@ object Formatter {
         }
     checkEscapeSequences(kotlinCode)
 
-    val normalizedKotlinCode = convertLineSeparators(kotlinCode)
-    val formattedCode =
-        if (lineRanges == null && characterRanges == null) {
-          FormatterContext(normalizedKotlinCode)
-              .transform { sortedAndDistinctImports(it) }
-              .transform { dropRedundantElements(it, options) }
-              .transform { addRedundantElements(it, options) }
-              .let { prettyPrintAndManageTrailingCommas(it, options, lineSeparator = "\n") }
-              .transform { MultilineStringFormatter(options.continuationIndent).format(it) }
-              .code
-        } else {
-          val selectedCharacterRanges =
-              characterRangesForPartialFormatting(
-                  normalizedKotlinCode,
-                  lineRanges,
-                  characterRanges,
-                  shebang,
-              )
-          val partiallyFormattedCode =
-              if (selectedCharacterRanges.isEmpty) {
-                normalizedKotlinCode
-              } else {
-                FormatterContext(normalizedKotlinCode)
-                    .transform {
-                      prettyPrint(
-                          it,
-                          options,
-                          lineSeparator = "\n",
-                          characterRanges = selectedCharacterRanges.asRanges(),
-                      )
-                    }
-                    .code
-              }
-          FormatterContext(partiallyFormattedCode)
-              .transform { dropRedundantElements(it, options) }
-              .transform { sortedAndDistinctImports(it, trimLeadingWhitespace = true) }
-              .transform { addRedundantElements(it, options) }
-              .transform { MultilineStringFormatter(options.continuationIndent).format(it) }
-              .code
+    val completeFormat = lineRanges == null && characterRanges == null
+    val normalizedKotlinCode =
+        convertLineSeparators(kotlinCode).let { normalizedKotlinCode ->
+          if (completeFormat) {
+            normalizedKotlinCode
+          } else {
+            val selectedCharacterRanges =
+                characterRangesForPartialFormatting(
+                    normalizedKotlinCode,
+                    lineRanges,
+                    characterRanges,
+                    shebang,
+                )
+            FormatterContext(normalizedKotlinCode)
+                .transform {
+                  prettyPrint(
+                      it,
+                      options,
+                      lineSeparator = "\n",
+                      characterRanges = selectedCharacterRanges.asRanges(),
+                  )
+                }
+                .code
+          }
         }
+    val formattedCode =
+        FormatterContext(normalizedKotlinCode)
+            .transform { dropRedundantElements(it, options) }
+            .transform { sortedAndDistinctImports(it, true) }
+            .let {
+              it.applyIf(completeFormat) {
+                it.transform { addRedundantElements(it, options) }
+                    .transform { prettyPrint(it, options, lineSeparator = "\n") }
+              }
+            }
+            .let { manageTrailingCommas(it, options, lineSeparator = "\n") }
+            .transform { MultilineStringFormatter(options.continuationIndent).format(it) }
+            .code
 
     return formattedCode
         .let { convertLineSeparators(it, checkNotNull(Newlines.guessLineSeparator(kotlinCode))) }
@@ -164,18 +164,27 @@ object Formatter {
   }
 
   /**
-   * Pretty-prints & reprints while [addRedundantElements] keeps adding trailing commas, so a comma
-   * inserted after layout can't leave a line over the limit.
+   * Inserts the trailing commas [context] requires and re-lays out only the lines that received
+   * one, repeating until none are added. A trailing comma is inserted as a text edit after layout,
+   * so a comma added to a line already at the width limit would push it over; re-laying out just
+   * that line keeps formatting within the limit and idempotent. Works the same whether [context]
+   * was fully or partially pretty-printed, since only the commas' own ranges are re-laid out.
    */
-  private tailrec fun prettyPrintAndManageTrailingCommas(
+  private tailrec fun manageTrailingCommas(
       context: FormatterContext,
       options: FormattingOptions,
       lineSeparator: String,
   ): FormatterContext {
-    val prettyCode = context.transform { prettyPrint(it, options, lineSeparator) }
-    val newCode = prettyCode.transform { addRedundantElements(it, options) }
-    return if (newCode == prettyCode) prettyCode
-    else prettyPrintAndManageTrailingCommas(newCode, options, lineSeparator)
+    val withCommas = addRedundantElementsWithRanges(Parser.parse(context.code), options)
+    val reLaidOut =
+        FormatterContext(withCommas.code).transform {
+          prettyPrint(it, options, lineSeparator, withCommas.insertedCommaRanges.asRanges())
+        }
+    return if (reLaidOut.code == context.code) {
+      reLaidOut
+    } else {
+      manageTrailingCommas(reLaidOut, options, lineSeparator)
+    }
   }
 
   /** prettyPrint reflows 'code' using google-java-format's engine. */
