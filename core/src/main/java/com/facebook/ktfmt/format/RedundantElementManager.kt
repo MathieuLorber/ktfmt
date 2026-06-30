@@ -16,6 +16,9 @@
 
 package com.facebook.ktfmt.format
 
+import com.google.common.collect.Range
+import com.google.common.collect.RangeSet
+import com.google.common.collect.TreeRangeSet
 import org.jetbrains.kotlin.com.intellij.psi.PsiElement
 import org.jetbrains.kotlin.com.intellij.psi.PsiWhiteSpace
 import org.jetbrains.kotlin.kdoc.psi.impl.KDocImpl
@@ -93,14 +96,26 @@ object RedundantElementManager {
     return result.toString()
   }
 
-  internal fun addRedundantElements(file: KtFile, options: FormattingOptions): String {
+  internal fun addRedundantElements(file: KtFile, options: FormattingOptions): String =
+      addRedundantElementsWithRanges(file, options).code
+
+  /**
+   * Result of [addRedundantElementsWithRanges]: the [code] with trailing commas inserted, and the
+   * character ranges in [code] each inserted comma occupies (so a caller can re-layout only those
+   * spots).
+   */
+  internal class TrailingCommaResult(val code: String, val insertedCommaRanges: RangeSet<Int>)
+
+  internal fun addRedundantElementsWithRanges(
+      file: KtFile,
+      options: FormattingOptions,
+  ): TrailingCommaResult {
+    val code = file.text
     if (!options.manageTrailingCommas) {
-      return file.text
+      return TrailingCommaResult(code, TreeRangeSet.create())
     }
 
-    val code = file.text
     val trailingCommaSuggestor = TrailingCommas.Suggestor()
-
     file.accept(
         object : KtTreeVisitorVoid() {
           override fun visitKtElement(element: KtElement) {
@@ -110,15 +125,22 @@ object RedundantElementManager {
         }
     )
 
-    val suggestionElements = trailingCommaSuggestor.getTrailingCommaSuggestions()
-    if (suggestionElements.isEmpty()) return code
-    val result = StringBuilder(code)
+    val offsets =
+        trailingCommaSuggestor.getTrailingCommaSuggestions().map(PsiElement::endOffset).sorted()
+    if (offsets.isEmpty()) return TrailingCommaResult(code, TreeRangeSet.create())
 
-    for (element in suggestionElements.sortedByDescending(PsiElement::endOffset)) {
-      result.insert(element.endOffset, ',')
+    val result = StringBuilder(code)
+    for (offset in offsets.asReversed()) {
+      result.insert(offset, ',')
     }
 
-    return result.toString()
+    // Inserting at ascending offsets o_i (done in reverse above), the i-th comma ends up at
+    // o_i + i in the final text, since i commas were inserted before it.
+    val insertedCommaRanges = TreeRangeSet.create<Int>()
+    offsets.forEachIndexed { i, offset ->
+      insertedCommaRanges.add(Range.closedOpen(offset + i, offset + i + 1))
+    }
+    return TrailingCommaResult(result.toString(), insertedCommaRanges)
   }
 
   private fun PsiElement?.containsNewline(): Boolean {

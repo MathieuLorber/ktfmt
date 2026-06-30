@@ -18,6 +18,7 @@ package com.facebook.ktfmt.format
 
 import com.facebook.ktfmt.debughelpers.printOps
 import com.facebook.ktfmt.format.RedundantElementManager.addRedundantElements
+import com.facebook.ktfmt.format.RedundantElementManager.addRedundantElementsWithRanges
 import com.facebook.ktfmt.format.RedundantElementManager.dropRedundantElements
 import com.facebook.ktfmt.format.WhitespaceTombstones.indexOfWhitespaceTombstone
 import com.facebook.ktfmt.kdoc.Escaping
@@ -121,10 +122,17 @@ object Formatter {
     val formattedCode =
         if (lineRanges == null && characterRanges == null) {
           FormatterContext(normalizedKotlinCode)
-              .transform { sortedAndDistinctImports(it) }
+              .transform { sortedAndDistinctImports(it, true) }
               .transform { dropRedundantElements(it, options) }
               .transform { addRedundantElements(it, options) }
-              .let { prettyPrintAndManageTrailingCommas(it, options, lineSeparator = "\n") }
+              .let {
+                prettyPrintAndManageTrailingCommas(
+                    it,
+                    options,
+                    lineSeparator = "\n",
+                    characterRanges = listOf(Range.closedOpen(0, it.code.length)),
+                )
+              }
               .transform { MultilineStringFormatter(options.continuationIndent).format(it) }
               .code
         } else {
@@ -171,11 +179,20 @@ object Formatter {
       context: FormatterContext,
       options: FormattingOptions,
       lineSeparator: String,
+      characterRanges: Collection<Range<Int>>,
   ): FormatterContext {
-    val prettyCode = context.transform { prettyPrint(it, options, lineSeparator) }
-    val newCode = prettyCode.transform { addRedundantElements(it, options) }
-    return if (newCode == prettyCode) prettyCode
-    else prettyPrintAndManageTrailingCommas(newCode, options, lineSeparator)
+    val pretty = context.transform { prettyPrint(it, options, lineSeparator, characterRanges) }
+    val withCommas = addRedundantElementsWithRanges(Parser.parse(pretty.code), options)
+    return if (withCommas.code == pretty.code) {
+      pretty
+    } else {
+      prettyPrintAndManageTrailingCommas(
+          FormatterContext(withCommas.code),
+          options,
+          lineSeparator,
+          characterRanges = withCommas.insertedCommaRanges.asRanges(),
+      )
+    }
   }
 
   /** prettyPrint reflows 'code' using google-java-format's engine. */
