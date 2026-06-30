@@ -43,6 +43,7 @@ import org.jetbrains.kotlin.psi.KtFile
 import org.jetbrains.kotlin.psi.KtImportDirective
 import org.jetbrains.kotlin.psi.psiUtil.endOffset
 import org.jetbrains.kotlin.psi.psiUtil.startOffset
+import org.jetbrains.kotlin.utils.addToStdlib.applyIf
 
 object Formatter {
 
@@ -118,47 +119,44 @@ object Formatter {
         }
     checkEscapeSequences(kotlinCode)
 
-    val normalizedKotlinCode = convertLineSeparators(kotlinCode)
-    val formattedCode =
-        if (lineRanges == null && characterRanges == null) {
-          FormatterContext(normalizedKotlinCode)
-              .transform { sortedAndDistinctImports(it, true) }
-              .transform { dropRedundantElements(it, options) }
-              .transform { addRedundantElements(it, options) }
-              .transform { prettyPrint(it, options, lineSeparator = "\n") }
-              .let { manageTrailingCommas(it, options, lineSeparator = "\n") }
-              .transform { MultilineStringFormatter(options.continuationIndent).format(it) }
-              .code
-        } else {
-          val selectedCharacterRanges =
-              characterRangesForPartialFormatting(
-                  normalizedKotlinCode,
-                  lineRanges,
-                  characterRanges,
-                  shebang,
-              )
-          val partiallyFormattedCode =
-              if (selectedCharacterRanges.isEmpty) {
-                normalizedKotlinCode
-              } else {
-                FormatterContext(normalizedKotlinCode)
-                    .transform {
-                      prettyPrint(
-                          it,
-                          options,
-                          lineSeparator = "\n",
-                          characterRanges = selectedCharacterRanges.asRanges(),
-                      )
-                    }
-                    .code
-              }
-          FormatterContext(partiallyFormattedCode)
-              .transform { dropRedundantElements(it, options) }
-              .transform { sortedAndDistinctImports(it, trimLeadingWhitespace = true) }
-              .let { manageTrailingCommas(it, options, lineSeparator = "\n") }
-              .transform { MultilineStringFormatter(options.continuationIndent).format(it) }
-              .code
+    val completeFormat = lineRanges == null && characterRanges == null
+    val normalizedKotlinCode =
+        convertLineSeparators(kotlinCode).let { normalizedKotlinCode ->
+          if (completeFormat) {
+            normalizedKotlinCode
+          } else {
+            val selectedCharacterRanges =
+                characterRangesForPartialFormatting(
+                    normalizedKotlinCode,
+                    lineRanges,
+                    characterRanges,
+                    shebang,
+                )
+            FormatterContext(normalizedKotlinCode)
+                .transform {
+                  prettyPrint(
+                      it,
+                      options,
+                      lineSeparator = "\n",
+                      characterRanges = selectedCharacterRanges.asRanges(),
+                  )
+                }
+                .code
+          }
         }
+    val formattedCode =
+        FormatterContext(normalizedKotlinCode)
+            .transform { dropRedundantElements(it, options) }
+            .transform { sortedAndDistinctImports(it, true) }
+            .let {
+              it.applyIf(completeFormat) {
+                it.transform { addRedundantElements(it, options) }
+                    .transform { prettyPrint(it, options, lineSeparator = "\n") }
+              }
+            }
+            .let { manageTrailingCommas(it, options, lineSeparator = "\n") }
+            .transform { MultilineStringFormatter(options.continuationIndent).format(it) }
+            .code
 
     return formattedCode
         .let { convertLineSeparators(it, checkNotNull(Newlines.guessLineSeparator(kotlinCode))) }
@@ -178,13 +176,13 @@ object Formatter {
       lineSeparator: String,
   ): FormatterContext {
     val withCommas = addRedundantElementsWithRanges(Parser.parse(context.code), options)
-    return if (withCommas.code == context.code) {
-      context
+    val reLaidOut =
+        FormatterContext(withCommas.code).transform {
+          prettyPrint(it, options, lineSeparator, withCommas.insertedCommaRanges.asRanges())
+        }
+    return if (reLaidOut.code == context.code) {
+      reLaidOut
     } else {
-      val reLaidOut =
-          FormatterContext(withCommas.code).transform {
-            prettyPrint(it, options, lineSeparator, withCommas.insertedCommaRanges.asRanges())
-          }
       manageTrailingCommas(reLaidOut, options, lineSeparator)
     }
   }
