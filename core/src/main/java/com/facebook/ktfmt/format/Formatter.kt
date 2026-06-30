@@ -125,14 +125,8 @@ object Formatter {
               .transform { sortedAndDistinctImports(it, true) }
               .transform { dropRedundantElements(it, options) }
               .transform { addRedundantElements(it, options) }
-              .let {
-                prettyPrintAndManageTrailingCommas(
-                    it,
-                    options,
-                    lineSeparator = "\n",
-                    characterRanges = listOf(Range.closedOpen(0, it.code.length)),
-                )
-              }
+              .transform { prettyPrint(it, options, lineSeparator = "\n") }
+              .let { manageTrailingCommas(it, options, lineSeparator = "\n") }
               .transform { MultilineStringFormatter(options.continuationIndent).format(it) }
               .code
         } else {
@@ -161,7 +155,7 @@ object Formatter {
           FormatterContext(partiallyFormattedCode)
               .transform { dropRedundantElements(it, options) }
               .transform { sortedAndDistinctImports(it, trimLeadingWhitespace = true) }
-              .transform { addRedundantElements(it, options) }
+              .let { manageTrailingCommas(it, options, lineSeparator = "\n") }
               .transform { MultilineStringFormatter(options.continuationIndent).format(it) }
               .code
         }
@@ -172,26 +166,26 @@ object Formatter {
   }
 
   /**
-   * Pretty-prints & reprints while [addRedundantElements] keeps adding trailing commas, so a comma
-   * inserted after layout can't leave a line over the limit.
+   * Inserts the trailing commas [context] requires and re-lays out only the lines that received
+   * one, repeating until none are added. A trailing comma is inserted as a text edit after layout,
+   * so a comma added to a line already at the width limit would push it over; re-laying out just
+   * that line keeps formatting within the limit and idempotent. Works the same whether [context]
+   * was fully or partially pretty-printed, since only the commas' own ranges are re-laid out.
    */
-  private tailrec fun prettyPrintAndManageTrailingCommas(
+  private tailrec fun manageTrailingCommas(
       context: FormatterContext,
       options: FormattingOptions,
       lineSeparator: String,
-      characterRanges: Collection<Range<Int>>,
   ): FormatterContext {
-    val pretty = context.transform { prettyPrint(it, options, lineSeparator, characterRanges) }
-    val withCommas = addRedundantElementsWithRanges(Parser.parse(pretty.code), options)
-    return if (withCommas.code == pretty.code) {
-      pretty
+    val withCommas = addRedundantElementsWithRanges(Parser.parse(context.code), options)
+    return if (withCommas.code == context.code) {
+      context
     } else {
-      prettyPrintAndManageTrailingCommas(
-          FormatterContext(withCommas.code),
-          options,
-          lineSeparator,
-          characterRanges = withCommas.insertedCommaRanges.asRanges(),
-      )
+      val reLaidOut =
+          FormatterContext(withCommas.code).transform {
+            prettyPrint(it, options, lineSeparator, withCommas.insertedCommaRanges.asRanges())
+          }
+      manageTrailingCommas(reLaidOut, options, lineSeparator)
     }
   }
 
