@@ -18,6 +18,8 @@ package com.facebook.ktfmt.cli
 
 import com.google.common.truth.Truth.assertThat
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.IOException
 import java.io.PrintStream
 import java.nio.charset.Charset
 import java.nio.charset.StandardCharsets
@@ -26,6 +28,7 @@ import java.nio.file.Files
 import java.util.concurrent.ForkJoinPool
 import kotlin.io.path.createTempDirectory
 import org.junit.After
+import org.junit.Assume
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -99,6 +102,83 @@ class MainTest {
 
     assertThat(Main.expandArgsToFileNames(listOf(dir1.toString(), dir2.toString())))
         .containsExactly(foo1, bar1, foo2, bar2)
+  }
+
+  @Test
+  fun `expandArgsToFileNames - removeIgnored skips git-ignored files`() {
+    val repo = gitRepo("repo")
+    repo.resolve(".gitignore").writeText("/build\n", UTF_8)
+    val kept = repo.resolve("Keep.kt").apply { writeText("", UTF_8) }
+    val build = repo.resolve("build").apply { mkdirs() }
+    build.resolve("Generated.kt").writeText("", UTF_8)
+
+    assertThat(Main.expandArgsToFileNames(listOf(repo.toString()), removeIgnored = true))
+        .containsExactly(kept)
+  }
+
+  @Test
+  fun `expandArgsToFileNames - without removeIgnored keeps git-ignored files`() {
+    val repo = gitRepo("repo")
+    repo.resolve(".gitignore").writeText("/build\n", UTF_8)
+    val kept = repo.resolve("Keep.kt").apply { writeText("", UTF_8) }
+    val build = repo.resolve("build").apply { mkdirs() }
+    val ignored = build.resolve("Generated.kt").apply { writeText("", UTF_8) }
+
+    assertThat(Main.expandArgsToFileNames(listOf(repo.toString())))
+        .containsExactly(kept, ignored)
+  }
+
+  @Test
+  fun `expandArgsToFileNames - removeIgnored honours nested gitignore files`() {
+    val repo = gitRepo("repo")
+    val module = repo.resolve("module").apply { mkdirs() }
+    module.resolve(".gitignore").writeText("/build\n", UTF_8)
+    val kept = module.resolve("Keep.kt").apply { writeText("", UTF_8) }
+    val build = module.resolve("build").apply { mkdirs() }
+    build.resolve("Generated.kt").writeText("", UTF_8)
+
+    assertThat(Main.expandArgsToFileNames(listOf(repo.toString()), removeIgnored = true))
+        .containsExactly(kept)
+  }
+
+  @Test
+  fun `expandArgsToFileNames - removeIgnored degrades gracefully outside a git repo`() {
+    // 'root' is a plain temp directory, not a git repository: nothing should be filtered out.
+    val dir = root.resolve("plain").apply { mkdirs() }
+    dir.resolve(".gitignore").writeText("/build\n", UTF_8)
+    val foo = dir.resolve("Foo.kt").apply { writeText("", UTF_8) }
+    val build = dir.resolve("build").apply { mkdirs() }
+    val generated = build.resolve("Generated.kt").apply { writeText("", UTF_8) }
+
+    assertThat(Main.expandArgsToFileNames(listOf(dir.toString()), removeIgnored = true))
+        .containsExactly(foo, generated)
+  }
+
+  /** Creates a directory under [root] and initialises an empty git repository inside it. */
+  private fun gitRepo(name: String): File {
+    val dir = root.resolve(name).apply { mkdirs() }
+    assumeGitAvailable()
+    runGit(dir, "init")
+    return dir
+  }
+
+  private fun runGit(dir: File, vararg args: String) {
+    val process =
+        ProcessBuilder(listOf("git", *args)).directory(dir).redirectErrorStream(true).start()
+    process.inputStream.readBytes()
+    assertThat(process.waitFor()).isEqualTo(0)
+  }
+
+  private fun assumeGitAvailable() {
+    val available =
+        try {
+          val process = ProcessBuilder("git", "--version").redirectErrorStream(true).start()
+          process.inputStream.readBytes()
+          process.waitFor() == 0
+        } catch (_: IOException) {
+          false
+        }
+    Assume.assumeTrue("git is not available on the PATH", available)
   }
 
   @Test

@@ -39,6 +39,13 @@ data class ParsedArgs(
     val editorConfig: Boolean,
     /** Suppress all non-error output. */
     val quiet: Boolean,
+    /**
+     * When expanding directory arguments, skip files that git would ignore (via `.gitignore`,
+     * nested `.gitignore` files, `.git/info/exclude`, etc.). Has no effect on explicitly listed
+     * files or when reading from stdin. Requires `git` to be available on the PATH; if it is not, or
+     * the files are not inside a git repository, no filtering is applied.
+     */
+    val gitignore: Boolean = false,
 ) {
   companion object {
 
@@ -87,6 +94,10 @@ data class ParsedArgs(
         |  --enable-editorconfig             Enable .editorconfig overrides for supported formatting options (limited)
         |                                        see https://github.com/facebook/ktfmt/blob/main/README.md
         |  --quiet                           Suppress all non-error output
+        |  --gitignore                       When expanding directory arguments, skip files
+        |                                        ignored by git (.gitignore, nested .gitignore,
+        |                                        .git/info/exclude). Requires git on the PATH;
+        |                                        no effect on explicitly listed files
         |
         |ARGFILE:
         |  If the only argument begins with '@', the remainder of the argument is treated
@@ -114,6 +125,7 @@ data class ParsedArgs(
       var stdinName: String? = null
       var editorConfig = false
       var quiet = false
+      var gitignore = false
 
       if ("--help" in args || "-h" in args) return ParseResult.ShowMessage(HELP_TEXT)
       if ("--version" in args || "-v" in args) {
@@ -130,6 +142,7 @@ data class ParsedArgs(
           arg == "--do-not-remove-unused-imports" -> removeUnusedImports = false
           arg == "--enable-editorconfig" -> editorConfig = true
           arg == "--quiet" -> quiet = true
+          arg == "--gitignore" -> gitignore = true
           arg.startsWith("--stdin-name=") ->
               stdinName =
                   parseKeyValueArg("--stdin-name", arg)
@@ -164,6 +177,7 @@ data class ParsedArgs(
               stdinName,
               editorConfig,
               quiet,
+              gitignore,
           )
       )
     }

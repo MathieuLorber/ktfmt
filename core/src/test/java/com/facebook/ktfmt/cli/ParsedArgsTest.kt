@@ -116,6 +116,18 @@ class ParsedArgsTest {
   }
 
   @Test
+  fun `parseOptions recognizes --gitignore`() {
+    val parsed = assertSucceeds(ParsedArgs.parseOptions(arrayOf("--gitignore", "foo.kt")))
+    assertThat(parsed.gitignore).isTrue()
+  }
+
+  @Test
+  fun `parseOptions defaults --gitignore to false`() {
+    val parsed = assertSucceeds(ParsedArgs.parseOptions(arrayOf("foo.kt")))
+    assertThat(parsed.gitignore).isFalse()
+  }
+
+  @Test
   fun `parseOptions recognizes --stdin-name`() {
     val parsed = assertSucceeds(ParsedArgs.parseOptions(arrayOf("--stdin-name=my/foo.kt", "-")))
     assertThat(parsed.stdinName).isEqualTo("my/foo.kt")

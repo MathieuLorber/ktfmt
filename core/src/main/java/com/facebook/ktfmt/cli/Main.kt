@@ -63,20 +63,80 @@ class Main(
      *
      * Most commonly, 'args' is either a list of .kt files, or a name of a directory whose contents
      * the user wants to format.
+     *
+     * When [removeIgnored] is true, directory arguments are expanded by asking git for their
+     * non-ignored Kotlin files (see [gitListKotlinFiles]) instead of walking the filesystem. This is
+     * both faster (git never descends into ignored directories such as `build/`) and honours the
+     * full git ignore semantics. Files passed explicitly (i.e. non-directory arguments) are always
+     * kept, regardless of git ignore rules.
      */
-    fun expandArgsToFileNames(args: List<String>): List<File> {
+    fun expandArgsToFileNames(args: List<String>, removeIgnored: Boolean = false): List<File> {
       if (args.size == 1 && File(args[0]).isFile) {
         return listOf(File(args[0]))
       }
       val result = mutableListOf<File>()
       for (arg in args) {
+        val argFile = File(arg)
+        if (removeIgnored && argFile.isDirectory) {
+          val listed = gitListKotlinFiles(argFile)
+          if (listed != null) {
+            result.addAll(listed)
+            continue
+          }
+          // git unavailable or not a repository: fall back to walking the filesystem.
+        }
         result.addAll(
-            File(arg).walkTopDown().filter {
+            argFile.walkTopDown().filter {
               it.isFile && (it.extension == "kt" || it.extension == "kts")
             }
         )
       }
       return result
+    }
+
+    /**
+     * Lists the Kotlin (`.kt`/`.kts`) files under [dir] that git does not ignore, by delegating to
+     * `git ls-files`. This returns both tracked files and untracked-but-not-ignored files
+     * (`--others --exclude-standard`), honouring the full git ignore semantics: nested `.gitignore`
+     * files, `.git/info/exclude`, global excludes, negations and anchoring.
+     *
+     * Returns null when git is unavailable or [dir] is not inside a git repository, so the caller
+     * can fall back to walking the filesystem.
+     */
+    private fun gitListKotlinFiles(dir: File): List<File>? {
+      return try {
+        val process =
+            ProcessBuilder(
+                    "git",
+                    "ls-files",
+                    "--cached",
+                    "--others",
+                    "--exclude-standard",
+                    "-z",
+                    "--",
+                    "*.kt",
+                    "*.kts",
+                )
+                .directory(dir)
+                .redirectErrorStream(false)
+                .start()
+        // Read stdout fully (draining the pipe) before waiting, to avoid blocking on a full buffer.
+        val stdout = process.inputStream.readBytes().toString(UTF_8)
+        process.waitFor()
+        if (process.exitValue() != 0) {
+          null
+        } else {
+          // `-z` separates entries with NUL, so paths with spaces or newlines stay intact.
+          stdout
+              .split('\u0000')
+              .filter { it.isNotEmpty() }
+              .map { dir.resolve(it) }
+              .filter { it.isFile }
+        }
+      } catch (_: IOException) {
+        // git is not installed or could not be executed.
+        null
+      }
     }
   }
 
@@ -109,7 +169,7 @@ class Main(
       }
     }
 
-    val files: List<File> = expandArgsToFileNames(parsedArgs.fileNames)
+    val files: List<File> = expandArgsToFileNames(parsedArgs.fileNames, parsedArgs.gitignore)
 
     if (files.isEmpty()) {
       err.println("Error: no .kt files found")
